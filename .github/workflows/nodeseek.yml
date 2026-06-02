@@ -73,7 +73,7 @@ jobs:
         
     - name: 执行 NodeSeek 签到
       env:
-        NS_COOKIE: ${{ secrets.NS_COOKIE }}
+        NS_COOKIE: ${{ vars.NS_COOKIE }}
         GITHUB_REPOSITORY: ${{ github.repository }}
         PROXY_URL: ${{ vars.PROXY_URL }}
         TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
