@@ -1,9 +1,9 @@
-name: NodeSeek 混合签到器
+name: NodeSeek Sign
 
 on:
   schedule:
-    # 每天北京时间上午8:30运行 (UTC 00:30)
-    - cron: '30 0 * * *'
+      # UTC+8 00:00
+    - cron: '0 16 * * *'
   workflow_dispatch:
     inputs:
       enable_statistics:
