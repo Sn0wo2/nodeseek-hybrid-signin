@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import random
+import re
 import sys
 import time
 import traceback
@@ -115,6 +116,43 @@ def _request_with_impersonate(
             logging.debug("impersonate=%s failed: %s", version, e)
     logging.warning("All curl_cffi impersonate versions failed, falling back to no TLS spoofing")
     return session.request(method, url, headers=headers, timeout=timeout, **kwargs)
+
+
+# Mask account identifiers in logs: keeps first 2 + last 1 chars when long enough
+# to stay recognisable, falls back to a fixed string for very short names.
+_NAME_MASK_KEEP_HEAD = 2
+_NAME_MASK_KEEP_TAIL = 1
+
+
+def _mask_name(name: str) -> str:
+    if not name:
+        return "N/A"
+    n = name.strip()
+    if len(n) <= 2:
+        return "*" * len(n) if n else "N/A"
+    if len(n) <= 4:
+        return f"{n[0]}{'*' * (len(n) - 1)}"
+    return f"{n[:_NAME_MASK_KEEP_HEAD]}***{n[-_NAME_MASK_KEEP_TAIL:]}"
+
+
+# Pull the first integer (with optional sign) out of arbitrary text — reserved
+# for the Playwright head-info DOM fallback when the JSON response is not
+# directly available.
+_DRUMSTICK_NUM_RE = re.compile(r"-?\d+")
+
+
+def _extract_int(text: str) -> Optional[int]:
+    if not text:
+        return None
+    m = _DRUMSTICK_NUM_RE.search(text)
+    if not m:
+        return None
+    try:
+        return int(m.group(0))
+    except (TypeError, ValueError):
+        return None
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -416,7 +454,7 @@ class NodeSeekHybridSigner:
         return None
 
     def progressive_signin(self, account: AccountConfig) -> SigninResult:
-        logging.info("Starting signin: %s", account.display_name)
+        logging.info("Starting signin: %s", _mask_name(account.display_name))
         if not account.cookie:
             return SigninResult(False, "No cookie", "none")
 
@@ -469,7 +507,8 @@ class NodeSeekHybridSigner:
         return result
 
     def _process_account(self, account: AccountConfig) -> Tuple[AccountConfig, SigninResult]:
-        logging.info("=" * 30 + " %s " + "=" * 30, account.display_name)
+        masked = _mask_name(account.display_name)
+        logging.info("=" * 30 + " %s " + "=" * 30, masked)
         result = self.progressive_signin(account)
         result = self._annotate_with_stats(result, account.cookie)
         return account, result
@@ -489,11 +528,12 @@ class NodeSeekHybridSigner:
         for account in accounts:
             acc, result = self._process_account(account)
             results.append((acc, result))
+            masked = _mask_name(acc.display_name)
             if not result.success:
-                logging.error("%s: %s", acc.display_name, result.message)
+                logging.error("%s: %s", masked, result.message)
                 if result.cookie_expired:
-                    expired.append(acc.display_name)
-                    logging.warning("Cookie expired detected: %s", acc.display_name)
+                    expired.append(masked)
+                    logging.warning("Cookie expired detected: %s", masked)
 
         if expired:
             logging.warning("%d expired cookie(s): %s", len(expired), ", ".join(expired))
