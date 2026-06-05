@@ -8,7 +8,9 @@ __pycache__/
 *.so
 
 *.log
+nul
 screenshots/
+tmpcurl_cffi/
 
 # IDE
 .idea/
