@@ -14,15 +14,6 @@ on:
         options:
           - 'true'
           - 'false'
-      enable_browser:
-        description: 'Playwright browser fallback (auto/true/false)'
-        required: false
-        default: 'auto'
-        type: choice
-        options:
-          - 'auto'
-          - 'true'
-          - 'false'
       random_mode:
         description: 'Signin mode (false=chicken legs x5, true=random)'
         required: false
@@ -58,16 +49,11 @@ jobs:
     - name: Install dependencies
       run: poetry install --no-interaction
 
-    - name: Install Playwright browser
-      run: poetry run playwright install chromium --with-deps
-
     - name: Set env
       run: |
         echo "GITHUB_ACTIONS=true" >> $GITHUB_ENV
         echo "ENABLE_STATISTICS=${{ github.event.inputs.enable_statistics || 'true' }}" >> $GITHUB_ENV
-        echo "ENABLE_BROWSER=${{ github.event.inputs.enable_browser || 'auto' }}" >> $GITHUB_ENV
         echo "NS_RANDOM=${{ github.event.inputs.random_mode || 'true' }}" >> $GITHUB_ENV
-        echo "HEADLESS=true" >> $GITHUB_ENV
         echo "TIMEOUT=60" >> $GITHUB_ENV
 
     - name: Run signin
@@ -75,7 +61,7 @@ jobs:
         NS_COOKIE: ${{ vars.NS_COOKIE }}
         GITHUB_REPOSITORY: ${{ github.repository }}
         PROXY_URL: ${{ vars.PROXY_URL }}
-      run: poetry run python nodeseek_hybrid.py
+      run: poetry run python nodeseek_api_signin.py
 
     - name: Upload logs
       if: always()
@@ -84,5 +70,4 @@ jobs:
         name: nodeseek-logs-${{ github.run_number }}
         path: |
           *.log
-          screenshots/
         retention-days: 7

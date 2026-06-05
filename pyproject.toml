@@ -1,7 +1,7 @@
 [project]
-name = "nodeseek-hybrid-signin"
+name = "nodeseek-api-signin"
 version = "1.0.0"
-description = "NodeSeek Hybrid Signin"
+description = "NodeSeek API Signin"
 authors = [
     {name = "Me0wo"},
 ]
@@ -10,8 +10,6 @@ requires-python = ">=3.10,<4"
 license = "MIT"
 dependencies = [
     "curl-cffi>=0.15.0",
-    "playwright>=1.40.0",
-    "python-dateutil>=2.9.0",
 ]
 
 [project.urls]
