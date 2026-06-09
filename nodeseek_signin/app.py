@@ -1,131 +1,111 @@
 from __future__ import annotations
 
 import logging
-
-from niquests.exceptions import RequestException
-
-from nodeseek_signin.config import AppConfig, ConfigLoader
-from nodeseek_signin.cookie_store import GitHubSecretCookieStore
-from nodeseek_signin.cookies import join_account_cookies
-from nodeseek_signin.http_client import NodeSeekHttpClient
-from nodeseek_signin.models import AccountConfig, SignInResult
-from nodeseek_signin.signer import HttpSignInService
-from nodeseek_signin.stats import CreditStatsFetcher
+import os
 
 
-class NodeSeekSignInApp:
-    def __init__(self, config_loader: ConfigLoader | None = None) -> None:
-        self._config_loader = config_loader or ConfigLoader()
-        self._config = self._config_loader.load_app_config()
-        self._http_client = NodeSeekHttpClient(
-            proxy_url=self._config.proxy_url,
-            timeout=self._config.timeout,
+from nodeseek_signin.cookie_store import CookieStore, create_cookie_store
+from nodeseek_signin.signer import SignInResult, sign_in
+
+
+_BASE_URL = "https://www.nodeseek.com"
+
+
+def _load_cookies() -> list[str]:
+    raw = os.environ.get("NS_COOKIE", "")
+    return [c.strip() for c in raw.split("&") if c.strip()]
+
+
+def _bool(name: str, default: bool) -> bool:
+    val = (os.environ.get(name) or "").strip().lower()
+    if not val:
+        return default
+    if val in ("1", "true", "yes", "y", "on"):
+        return True
+    if val in ("0", "false", "no", "n", "off"):
+        return False
+    raise ValueError(f"{name} must be a boolean value")
+
+
+def _int(name: str, default: int, *, minimum: int = 1) -> int:
+    val = (os.environ.get(name) or "").strip()
+    if not val:
+        return default
+    n = int(val)
+    if n < minimum:
+        raise ValueError(f"{name} must be >= {minimum}")
+    return n
+
+
+def _cookie_store_name() -> str:
+    val = (os.environ.get("COOKIE_STORE") or "").strip().lower()
+    if val in ("github", "qinglong", "none"):
+        return val
+    return "auto"
+
+
+def _default_writeback(store: str) -> bool:
+    if store in ("github", "qinglong"):
+        return True
+    return os.environ.get("GITHUB_ACTIONS") == "true"
+
+
+class App:
+    def __init__(self) -> None:
+        store_name = _cookie_store_name()
+        self._base_url = (os.environ.get("BASE_URL") or _BASE_URL).strip().rstrip("/")
+        self._random = _bool("NS_RANDOM", True)
+        self._timeout = _int("TIMEOUT", 30)
+        self._proxy = os.environ.get("PROXY_URL", "").strip()
+        self._cookie_store: CookieStore | None = create_cookie_store(
+            store=store_name,
+            enabled=False if store_name == "none" else _bool("COOKIE_WRITEBACK", _default_writeback(store_name)),
         )
-        self._signer = HttpSignInService(
-            self._http_client,
-            random_mode=self._config.random_mode,
-        )
-        self._stats_fetcher = CreditStatsFetcher(
-            self._http_client,
-            enabled=self._config.enable_statistics,
-        )
-        self._cookie_store = GitHubSecretCookieStore(
-            enabled=self._config.cookie_writeback,
-        )
-
-        logging.info("Statistics: %s", "enabled" if self._config.enable_statistics else "disabled")
-        logging.info(
-            "Cookie write-back: %s",
-            "enabled" if self._config.cookie_writeback else "disabled",
-        )
-
-    @property
-    def config(self) -> AppConfig:
-        return self._config
 
     def run(self) -> int:
-        logging.info("NodeSeek HTTP signer starting")
-        logging.info("=" * 50)
-
-        accounts = self._config_loader.load_accounts()
-        if not accounts:
-            logging.error("No account configuration found")
+        cookies = _load_cookies()
+        if not cookies:
+            logging.error("No cookies found (set NS_COOKIE)")
             return 0
 
-        logging.info("Found %d account(s)", len(accounts))
-        results = self._process_accounts(accounts)
-        self._write_back_cookies(results)
-        expired = [account.display_name for account, result in results if result.cookie_expired]
+        logging.info("Found %d account(s)", len(cookies))
+        results = [self._sign_one(i, c) for i, c in enumerate(cookies, 1)]
+        self._write_back(cookies, results)
+
+        expired = [i for i, r in enumerate(results, 1) if r.cookie_expired]
         if expired:
-            logging.warning("%d expired cookie(s): %s", len(expired), ", ".join(expired))
+            logging.warning("Expired cookies: Account %s", ", ".join(str(i) for i in expired))
 
-        success_count = sum(1 for _, result in results if result.success)
-        logging.info("Cookie check complete")
-        logging.info("=" * 50)
-        logging.info("Done: %d/%d succeeded", success_count, len(results))
-        logging.info("HTTP signer finished")
-        return success_count
+        ok = sum(1 for r in results if r.success)
+        logging.info("Done: %d/%d succeeded", ok, len(results))
+        return ok
 
-    def _process_accounts(
-        self,
-        accounts: list[AccountConfig],
-    ) -> list[tuple[AccountConfig, SignInResult]]:
-        results: list[tuple[AccountConfig, SignInResult]] = []
-        for account in accounts:
-            result = self._process_account(account)
-            results.append((account, result))
-            if result.success:
-                continue
+    def _sign_one(self, index: int, cookie: str) -> SignInResult:
+        name = f"Account{index}"
+        logging.info("Signing in: %s", name)
 
-            logging.error("%s: %s", account.display_name, result.message)
-            if result.cookie_expired:
-                logging.warning("Cookie expired detected: %s", account.display_name)
+        result = sign_in(
+            cookie,
+            base_url=self._base_url,
+            random_mode=self._random,
+            proxy_url=self._proxy,
+            timeout=self._timeout,
+        )
 
-        return results
-
-    def _process_account(self, account: AccountConfig) -> SignInResult:
-        logging.info("=" * 30 + " %s " + "=" * 30, account.display_name)
-        result = self._sign_in(account)
-        return self._annotate_with_stats(result, result.updated_cookie or account.cookie)
-
-    def _sign_in(self, account: AccountConfig) -> SignInResult:
-        logging.info("Starting sign-in: %s", account.display_name)
-        if not account.cookie:
-            return SignInResult(False, "No cookie", "none")
-
-        result = self._signer.sign_in(account.cookie)
-        if result.success:
-            logging.info("HTTP success: %s", result.message)
-        else:
-            logging.warning("HTTP failed: %s", result.message)
+        log = logging.info if result.success else logging.error
+        log("%s: %s", name, result.message)
         return result
 
-    def _annotate_with_stats(self, result: SignInResult, cookie: str) -> SignInResult:
-        if not result.success or not self._config.enable_statistics:
-            return result
-
-        try:
-            stats = self._stats_fetcher.fetch(cookie)
-        except RequestException as exc:
-            logging.warning("Statistics query failed: %s", exc)
-            return result
-
-        if stats is None:
-            return result
-
-        result.statistics = stats.to_payload()
-        result.message += f" | {stats.days_count}-day stats: avg {stats.average} drumsticks/day"
-        return result
-
-    def _write_back_cookies(self, results: list[tuple[AccountConfig, SignInResult]]) -> None:
-        if not any(result.updated_cookie for _, result in results):
+    def _write_back(self, cookies: list[str], results: list[SignInResult]) -> None:
+        if self._cookie_store is None:
+            return
+        if not any(r.updated_cookie for r in results):
             return
 
-        updated_cookies = [
-            result.updated_cookie or account.cookie
-            for account, result in results
-        ]
-        if self._cookie_store.save(join_account_cookies(updated_cookies)):
-            logging.info("NS_COOKIE secret write-back complete")
+        updated = [r.updated_cookie or orig for orig, r in zip(cookies, results)]
+        merged = "&".join(c for c in updated if c)
+
+        if self._cookie_store.save(merged):
+            logging.info("NS_COOKIE write-back complete")
         else:
-            logging.warning("NS_COOKIE changed but secret write-back did not complete")
+            logging.warning("NS_COOKIE changed but write-back failed")
